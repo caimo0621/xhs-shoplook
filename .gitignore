@@ -1,0 +1,6 @@
+.DS_Store
+.claude/
+粘贴这个.txt
+dist/*.txt
+NEXT-STEPS.md
+REDCOWORK-PROMPT.md
