@@ -52,6 +52,17 @@ h1{font-size:22px;margin:0 0 6px;letter-spacing:-.3px}
   box-shadow:0 18px 44px rgba(0,0,0,.5)}
 .vwrap video{width:100%;height:100%;object-fit:cover;display:block}
 
+/* 首次缓冲 / seek 卡顿时盖一层提示，别让用户对着黑屏猜 */
+.vload{position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:11px;background:#111;
+  color:rgba(255,255,255,.72);font-size:12.5px;letter-spacing:.3px;
+  opacity:0;pointer-events:none;transition:opacity .35s}
+.stage.loading .vload{opacity:1}
+.vload .ring{width:26px;height:26px;border-radius:50%;
+  border:2px solid rgba(255,255,255,.18);border-top-color:rgba(255,255,255,.85);
+  animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
 /* 自动播放被浏览器拦下时的手动播放入口；平时也可点视频暂停讲解 */
 .playbtn{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%) scale(.8);z-index:6;
   width:62px;height:62px;border-radius:50%;border:none;cursor:pointer;
@@ -405,13 +416,14 @@ body.plain .hot{display:none}
 <body>
 <div class="wrap">
   <h1>小红书 · 整套同款挂载（Shop the Look）</h1>
-  <p class="sub">一条穿搭视频从 <b>挂 1 个商品位</b> 变成 <b>挂 14 个</b>。锚点随画面里的 look 自动切换，点开后视频等比缩小不裁切，抽屉展示这一身的全部单品，可单买、可一键加购整套。</p>
+  <p class="sub">一条穿搭视频里的 14 件单品，从 <b>散在评论区的链接</b> 变成 <b>一个整套购买入口</b>。锚点随画面里的 look 自动切换，点开后视频等比缩小不裁切，抽屉展示这一身的全部单品，可单买、可一键加购整套。</p>
 
   <div class="layout">
     <div class="phone"><div class="stage" id="stage">
 
       <video class="vbg" id="vbg" muted playsinline loop autoplay preload="auto" src="look.mp4"></video>
       <div class="vwrap"><video id="v" muted playsinline loop autoplay preload="auto" src="look.mp4"></video></div>
+      <div class="vload" id="vload"><span class="ring"></span><span>视频加载中…</span></div>
       <button class="playbtn" id="playbtn" title="播放/暂停">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.2v13.6a1 1 0 001.5.86l11-6.8a1 1 0 000-1.72l-11-6.8A1 1 0 008 5.2z"/></svg>
       </button>
@@ -431,9 +443,9 @@ body.plain .hot{display:none}
     <div class="panel">
       <div class="sec">
         <h2>对照演示</h2>
-        <p class="hint">切到「现状」可以看到：同一条视频，小红书目前只能通过底部一条「相关搜索」把用户丢回搜索框，整身其余单品无处可去。</p>
+        <p class="hint">切到「现状」可以看到：同一条视频，单品链接只能散在评论区，或靠「相关搜索」把用户丢回搜索框；既不跟着画面走，也没法整套买。</p>
         <div class="toggle" id="toggle">
-          <button data-m="plain">现状（只有相关搜索）</button>
+          <button data-m="plain">现状（没有整套入口）</button>
           <button data-m="new" class="on">改造后（整套挂载）</button>
         </div>
       </div>
@@ -447,7 +459,7 @@ body.plain .hot{display:none}
       <div class="sec">
         <h2>商业化口径</h2>
         <div class="kpi">
-          <div><b>1 → 14</b><span>单条笔记可售卖商品位</span></div>
+          <div><b>14 件 · 1 个入口</b><span>整身单品跟着画面一次买齐</span></div>
           <div><b>4</b><span>可独立计费的 look 单元</span></div>
           <div><b>¥9,218</b><span>整套客单价（LOOK 3）</span></div>
           <div><b>0 次</b><span>跳转搜索的流失环节</span></div>
@@ -473,6 +485,46 @@ const P = 'assets/p/';
 const IMGS = window.IMGS || {};
 const img = n => IMGS[n] || (P + n + '.jpg');
 const money = n => '<i>¥</i>' + n.toLocaleString('zh-CN');
+
+// 商品图有三种来源，按这个顺序退：
+//   1. IMGS 里已内联的 data URI（单文件版 dist/index.html）
+//   2. assets/sprite.jpg —— 14 张拼成的 7×2 雪碧图，运行时用 canvas 切开
+//   3. assets/p/*.jpg —— 14 个独立文件
+// 第 2 种是给「只能上传少量文件」的平台用的：图 + 视频一共只要传 2 个文件。
+const SPRITE = {
+  src: 'assets/sprite.jpg', cols: 7, rows: 2,
+  names: ['a1_coat','a2_turtle','a3_beret','a4_bag',
+          'b1_redtop','b2_pants','b3_navycoat',
+          'c1_white','c2_skirt','c3_bluecoat','c4_scarf',
+          'd1_shirt','d2_leopard','d3_bag']
+};
+async function loadSprite(){
+  if(Object.keys(IMGS).length) return 'inlined';      // 单文件版，不用切
+  try{
+    const im = new Image();
+    // 用 onload 而不是 decode()：decode() 在页面不绘制时可能一直不 settle，
+    // 会把后面的初始化全卡死。再加一道 6 秒超时兜底。
+    const loaded = new Promise((res, rej)=>{
+      im.onload = res;
+      im.onerror = () => rej(new Error('sprite 404'));
+      setTimeout(()=>rej(new Error('sprite timeout')), 6000);
+    });
+    im.src = SPRITE.src;
+    await loaded;
+    const cw = im.naturalWidth / SPRITE.cols, ch = im.naturalHeight / SPRITE.rows;
+    const cv = document.createElement('canvas');
+    cv.width = cw; cv.height = ch;
+    const ctx = cv.getContext('2d');
+    SPRITE.names.forEach((n,i)=>{
+      ctx.clearRect(0, 0, cw, ch);
+      ctx.drawImage(im, (i % SPRITE.cols) * cw, Math.floor(i / SPRITE.cols) * ch, cw, ch, 0, 0, cw, ch);
+      IMGS[n] = cv.toDataURL('image/jpeg', 0.85);
+    });
+    return 'sprite';
+  }catch(e){
+    return 'files';    // 没有 sprite.jpg 就退回 assets/p/ 下的单张图
+  }
+}
 
 /* ---------------- data ---------------- */
 const LOOKS = [
@@ -568,6 +620,46 @@ v.addEventListener('pause',()=>vbg.pause());
 v.addEventListener('seeked',()=>vbg.currentTime=v.currentTime);
 function boot(){ v.play().catch(()=>{}); vbg.play().catch(()=>{}); }
 v.addEventListener('loadeddata',boot,{once:true}); boot();
+
+// 有些静态服务器不支持 HTTP Range（返回 200 而不是 206），这种情况下
+// video.currentTime = X 会静默失败 —— 时间轴跳转、回看讲解、锚点随 look 切换全废。
+//
+// 兜底办法是把整个 mp4 取回来变成 blob: URL，但那要等 11MB 下完、还会让 video
+// 元素重置一次（公网上就是「黑屏十几秒再突然出现」）。所以先探一下：
+// 支持 Range 就什么都不做，保持流式播放，秒开。
+(async()=>{
+  const src = v.getAttribute('src');
+  try{
+    const probe = await fetch(src, {headers:{Range:'bytes=0-1'}});
+    if(probe.status === 206){
+      console.log('[视频] 服务器支持 Range，流式播放，不做 blob 预载');
+      return;
+    }
+    console.log('[视频] 服务器不支持 Range（返回 '+probe.status+'），改为 blob 预载以保证可 seek');
+    const res = await fetch(src);
+    if(!res.ok) return;
+    const url = URL.createObjectURL(await res.blob());
+    const t = v.currentTime, wasPlaying = !v.paused;
+    v.src = url; vbg.src = url;
+    v.currentTime = t; vbg.currentTime = t;
+    if(wasPlaying) boot();
+    console.log('[视频] 已转为 blob，seek 不再依赖服务器');
+  }catch(e){
+    console.log('[视频] 预载跳过，继续用原始 src：', e.message);
+  }
+})();
+
+// 缓冲提示：readyState < HAVE_FUTURE_DATA(3) 就说明还放不出下一帧，盖提示层。
+// 首次加载和 seek 到未缓冲位置都会触发，结束后自动消失。
+function syncLoading(){
+  stage.classList.toggle('loading', v.readyState < 3 && !v.error);
+}
+['loadstart','waiting','stalled','seeking'].forEach(e=>
+  v.addEventListener(e, ()=>{ if(v.readyState < 3) stage.classList.add('loading'); }));
+['loadeddata','canplay','canplaythrough','playing','seeked'].forEach(e=>
+  v.addEventListener(e, syncLoading));
+v.addEventListener('error', ()=>stage.classList.remove('loading'));
+syncLoading();
 
 // 自动播放可能被浏览器拦下，或被系统挂起。暴露一个播放按钮，别让画面看起来是坏的。
 function syncPaused(){ stage.classList.toggle('paused', v.paused); }
@@ -930,15 +1022,19 @@ function showToast(html, withCart){
 
 /* ---------------- side timeline ---------------- */
 const fmt=s=>Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
-LOOKS.forEach(L=>{
-  const b=document.createElement('button');
-  b.className='seg'; b.dataset.id=L.id;
-  b.innerHTML=`<span class="sw">${L.items.slice(0,3).map(x=>`<img src="${img(x.img)}" alt="">`).join('')}</span>
-    <span class="tx"><b>${L.id} · ${L.title}</b><span>${fmt(L.start)} – ${fmt(L.end)}</span></span>
-    <span class="ct">${L.items.length} 件</span>`;
-  b.onclick=()=>{ closePDP(); closeDrawer(); v.currentTime=L.start+1.5; v.play(); };
-  tl.appendChild(b);
-});
+function buildTimeline(){
+  tl.innerHTML='';
+  LOOKS.forEach(L=>{
+    const b=document.createElement('button');
+    b.className='seg'; b.dataset.id=L.id;
+    b.innerHTML=`<span class="sw">${L.items.slice(0,3).map(x=>`<img src="${img(x.img)}" alt="">`).join('')}</span>
+      <span class="tx"><b>${L.id} · ${L.title}</b><span>${fmt(L.start)} – ${fmt(L.end)}</span></span>
+      <span class="ct">${L.items.length} 件</span>`;
+    b.onclick=()=>{ closePDP(); closeDrawer(); v.currentTime=L.start+1.5; v.play(); };
+    tl.appendChild(b);
+  });
+  markTl(curSeg);
+}
 function markTl(seg){
   document.querySelectorAll('.seg').forEach(e=>e.classList.toggle('on', !!seg && e.dataset.id===seg.id));
 }
@@ -951,6 +1047,16 @@ document.getElementById('toggle').onclick=e=>{
   document.body.classList.toggle('plain', plain);
   if(plain){ closeDrawer(); closePDP(); }
 };
+
+/* ---------------- init ---------------- */
+// 立刻渲染，商品图先走 assets/p/ 兜底——不能让任何异步操作卡住首屏。
+buildTimeline();
+// 雪碧图切好了再悄悄换成切片；没有 sprite.jpg 就一直用独立文件，不影响任何功能。
+loadSprite().then(src=>{
+  console.log('[商品图来源]',
+    {inlined:'已内联 data URI', sprite:'assets/sprite.jpg 运行时切片', files:'assets/p/ 独立文件'}[src]);
+  if(src === 'sprite'){ buildTimeline(); renderHot(curSeg); }
+});
 </script>
 </body>
 </html>
